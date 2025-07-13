@@ -33,3 +33,30 @@ properties:
       Initialize the sensor in "force awake" mode. This can also be enabled or
       disabled in runtime by the application using the paw32xx_force_awake()
       API.
+
+  automouse-layer:
+    type: int
+    description: |
+      Layer index to activate when movement is detected. When movement is
+      detected above the threshold, the keyboard will automatically switch
+      to this layer for mouse operations.
+
+  scroll-layers:
+    type: int
+    description: |
+      Layer index for scroll mode. When this layer is active, trackball
+      movement will be converted to scroll wheel events.
+
+  movement-timeout-ms:
+    type: int
+    default: 600
+    description: |
+      Milliseconds of inactivity before automatically returning to base layer.
+      Set to 0 to disable timeout.
+
+  movement-threshold:
+    type: int
+    default: 100
+    description: |
+      Minimum accumulated movement (in sensor units) required to trigger
+      auto mouse layer activation. Lower values make the sensor more sensitive.

@@ -23,6 +23,12 @@
 
 #include "../include/paw3222.h"
 
+#ifdef CONFIG_ZMK_LAYERS
+#include <zmk/layers.h>
+#include <zmk/keymap.h>
+#include <zmk/events/layer_state_changed.h>
+#endif
+
 LOG_MODULE_REGISTER(paw32xx, CONFIG_ZMK_LOG_LEVEL);
 
 #define DT_DRV_COMPAT pixart_paw3222
@@ -73,6 +79,12 @@ struct paw32xx_config {
     struct gpio_dt_spec power_gpio;
     int16_t res_cpi;
     bool force_awake;
+#ifdef CONFIG_ZMK_LAYERS
+    int automouse_layer;
+    int scroll_layers;
+    int movement_timeout_ms;
+    int movement_threshold;
+#endif
 };
 
 struct paw32xx_data {
@@ -80,6 +92,12 @@ struct paw32xx_data {
     struct k_work motion_work;
     struct gpio_callback motion_cb;
     struct k_timer motion_timer; // Add timer for delayed motion checking
+#ifdef CONFIG_ZMK_LAYERS
+    struct k_timer automouse_timer; // Timer for auto mouse timeout
+    int accumulated_movement;       // Track total movement for threshold
+    bool automouse_active;          // Current auto mouse layer state
+    int original_layer;             // Layer to return to after timeout
+#endif
 };
 
 static inline int32_t sign_extend(uint32_t value, uint8_t index) {
@@ -207,6 +225,38 @@ static void paw32xx_motion_timer_handler(struct k_timer *timer) {
     k_work_submit(&data->motion_work);
 }
 
+#ifdef CONFIG_ZMK_LAYERS
+static void paw32xx_automouse_timeout_handler(struct k_timer *timer) {
+    struct paw32xx_data *data = CONTAINER_OF(timer, struct paw32xx_data, automouse_timer);
+    
+    if (data->automouse_active) {
+        LOG_DBG("Auto mouse timeout, returning to layer %d", data->original_layer);
+        zmk_layers_to(data->original_layer);
+        data->automouse_active = false;
+        data->accumulated_movement = 0;
+    }
+}
+
+static void paw32xx_activate_automouse_layer(struct paw32xx_data *data, const struct paw32xx_config *cfg) {
+    if (!data->automouse_active && cfg->automouse_layer >= 0) {
+        data->original_layer = zmk_layers_get_current();
+        zmk_layers_to(cfg->automouse_layer);
+        data->automouse_active = true;
+        
+        LOG_DBG("Activated auto mouse layer %d (was layer %d)", 
+               cfg->automouse_layer, data->original_layer);
+        
+        // Start timeout timer if configured
+        if (cfg->movement_timeout_ms > 0) {
+            k_timer_start(&data->automouse_timer, K_MSEC(cfg->movement_timeout_ms), K_NO_WAIT);
+        }
+    } else if (data->automouse_active && cfg->movement_timeout_ms > 0) {
+        // Reset timeout timer on continued movement
+        k_timer_start(&data->automouse_timer, K_MSEC(cfg->movement_timeout_ms), K_NO_WAIT);
+    }
+}
+#endif
+
 static void paw32xx_motion_work_handler(struct k_work *work) {
     struct paw32xx_data *data = CONTAINER_OF(work, struct paw32xx_data, motion_work);
     const struct device *dev = data->dev;
@@ -235,6 +285,25 @@ static void paw32xx_motion_work_handler(struct k_work *work) {
     }
 
     LOG_DBG("x=%4d y=%4d", x, y);
+
+#ifdef CONFIG_ZMK_LAYERS
+    // Auto mouse layer logic
+    if (cfg->automouse_layer >= 0 && cfg->movement_threshold > 0) {
+        int movement_magnitude = abs(x) + abs(y);
+        data->accumulated_movement += movement_magnitude;
+        
+        if (!data->automouse_active && data->accumulated_movement >= cfg->movement_threshold) {
+            paw32xx_activate_automouse_layer(data, cfg);
+        } else if (data->automouse_active && cfg->movement_timeout_ms > 0) {
+            // Reset timeout on continued movement
+            k_timer_start(&data->automouse_timer, K_MSEC(cfg->movement_timeout_ms), K_NO_WAIT);
+        }
+        
+        LOG_DBG("Movement: %d, accumulated: %d, threshold: %d, active: %s", 
+               movement_magnitude, data->accumulated_movement, cfg->movement_threshold,
+               data->automouse_active ? "true" : "false");
+    }
+#endif
 
     input_report_rel(data->dev, INPUT_REL_X, x, false, K_FOREVER);
     input_report_rel(data->dev, INPUT_REL_Y, y, true, K_FOREVER);
@@ -361,6 +430,17 @@ static int paw32xx_init(const struct device *dev) {
     k_work_init(&data->motion_work, paw32xx_motion_work_handler);
     // Initialize the timer for delayed motion checks
     k_timer_init(&data->motion_timer, paw32xx_motion_timer_handler, NULL);
+
+#ifdef CONFIG_ZMK_LAYERS
+    // Initialize auto mouse functionality
+    k_timer_init(&data->automouse_timer, paw32xx_automouse_timeout_handler, NULL);
+    data->accumulated_movement = 0;
+    data->automouse_active = false;
+    data->original_layer = 0;
+    
+    LOG_DBG("Auto mouse initialized: layer=%d, threshold=%d, timeout=%dms", 
+           cfg->automouse_layer, cfg->movement_threshold, cfg->movement_timeout_ms);
+#endif
 
 #if DT_INST_NODE_HAS_PROP(0, power_gpios)
     // Initialize power GPIO if defined
@@ -493,6 +573,10 @@ static int paw32xx_pm_action(const struct device *dev, enum pm_device_action act
         .power_gpio = GPIO_DT_SPEC_INST_GET_OR(n, power_gpios, {0}),                               \
         .res_cpi = DT_INST_PROP_OR(n, res_cpi, -1),                                                \
         .force_awake = DT_INST_PROP(n, force_awake),                                               \
+        IF_ENABLED(CONFIG_ZMK_LAYERS, (.automouse_layer = DT_INST_PROP_OR(n, automouse_layer, -1),)) \
+        IF_ENABLED(CONFIG_ZMK_LAYERS, (.scroll_layers = DT_INST_PROP_OR(n, scroll_layers, -1),))   \
+        IF_ENABLED(CONFIG_ZMK_LAYERS, (.movement_timeout_ms = DT_INST_PROP_OR(n, movement_timeout_ms, 600),)) \
+        IF_ENABLED(CONFIG_ZMK_LAYERS, (.movement_threshold = DT_INST_PROP_OR(n, movement_threshold, 100),)) \
     };                                                                                             \
                                                                                                    \
     static struct paw32xx_data paw32xx_data_##n;                                                   \
