@@ -1,6 +1,54 @@
 
 menuconfig PAW3222
     bool "PAW3222 mouse optical sensor"
-  select SPI
+    select SPI
     help
       Enable PAW3222 mouse optical sensor.
+
+if PAW3222
+
+config PAW3222_MOVEMENT_THRESHOLD
+    int "Movement threshold for auto mouse layer activation"
+    default 100
+    help
+      Minimum accumulated movement (in sensor units) required to trigger
+      auto mouse layer activation. Set to 0 to activate on any movement.
+
+config PAW3222_SMART_ALGORITHM
+    bool "Enable smart movement algorithm"
+    default y
+    help
+      Enable intelligent movement processing for improved tracking accuracy
+      and responsiveness. This includes movement filtering and acceleration
+      curves similar to PMW3610 smart algorithm.
+
+config PAW3222_SCROLL_LAYERS
+    int "Default scroll layer index"
+    default 4
+    help
+      Default layer index for scroll mode when trackball movement
+      is converted to scroll wheel events.
+
+config PAW3222_AUTOMOUSE_LAYER
+    int "Default auto mouse layer index"
+    default 5
+    help
+      Default layer index to activate when movement is detected above
+      the configured threshold.
+
+config PAW3222_TIMEOUT_MS
+    int "Auto mouse timeout in milliseconds"
+    default 600
+    range 100 5000
+    help
+      Milliseconds of inactivity before automatically returning to base layer.
+      Set to a higher value for longer mouse mode sessions.
+
+config PAW3222_DEBUG
+    bool "Enable PAW3222 debug logging"
+    default n
+    help
+      Enable detailed debug logging for PAW3222 sensor operations,
+      movement detection, and layer switching.
+
+endif # PAW3222

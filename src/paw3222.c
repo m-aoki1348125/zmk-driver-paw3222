@@ -98,6 +98,13 @@ struct paw32xx_data {
     bool automouse_active;          // Current auto mouse layer state
     int original_layer;             // Layer to return to after timeout
 #endif
+#ifdef CONFIG_PAW3222_SMART_ALGORITHM
+    // Smart algorithm data
+    int16_t prev_x, prev_y;         // Previous movement values for filtering
+    uint32_t movement_count;        // Total movement counter
+    int16_t velocity_x, velocity_y; // Current velocity for acceleration
+    uint32_t last_movement_time;    // Timestamp of last movement
+#endif
 };
 
 static inline int32_t sign_extend(uint32_t value, uint8_t index) {
@@ -237,6 +244,58 @@ static void paw32xx_automouse_timeout_handler(struct k_timer *timer) {
     }
 }
 
+#ifdef CONFIG_PAW3222_SMART_ALGORITHM
+static void paw32xx_apply_smart_algorithm(struct paw32xx_data *data, int16_t *x, int16_t *y) {
+    uint32_t current_time = k_uptime_get_32();
+    uint32_t dt = current_time - data->last_movement_time;
+    
+    // Movement threshold - ignore very small movements (noise reduction)
+    if (CONFIG_PAW3222_MOVEMENT_THRESHOLD > 0) {
+        int magnitude = abs(*x) + abs(*y);
+        if (magnitude < CONFIG_PAW3222_MOVEMENT_THRESHOLD) {
+            *x = 0;
+            *y = 0;
+            return;
+        }
+    }
+    
+    // Velocity calculation for acceleration
+    if (dt > 0 && dt < 100) { // Valid time delta (less than 100ms)
+        data->velocity_x = (*x * 1000) / dt; // pixels per second
+        data->velocity_y = (*y * 1000) / dt;
+        
+        // Apply acceleration curve based on velocity
+        int16_t vel_magnitude = sqrt(data->velocity_x * data->velocity_x + 
+                                   data->velocity_y * data->velocity_y);
+        
+        if (vel_magnitude > 500) { // High velocity threshold
+            // Apply acceleration multiplier
+            *x = (*x * 150) / 100; // 1.5x acceleration
+            *y = (*y * 150) / 100;
+        }
+    }
+    
+    // Simple noise filtering - average with previous movement
+    if (data->movement_count > 0) {
+        *x = (*x + data->prev_x) / 2;
+        *y = (*y + data->prev_y) / 2;
+    }
+    
+    // Update tracking variables
+    data->prev_x = *x;
+    data->prev_y = *y;
+    data->movement_count++;
+    data->last_movement_time = current_time;
+    
+    #ifdef CONFIG_PAW3222_DEBUG
+    LOG_DBG("Smart algorithm: raw(%d,%d) -> filtered(%d,%d), vel=%d", 
+           data->prev_x, data->prev_y, *x, *y, 
+           sqrt(data->velocity_x * data->velocity_x + data->velocity_y * data->velocity_y));
+    #endif
+}
+#endif /* CONFIG_PAW3222_SMART_ALGORITHM */
+#endif /* CONFIG_ZMK_LAYERS */
+
 static void paw32xx_activate_automouse_layer(struct paw32xx_data *data, const struct paw32xx_config *cfg) {
     if (!data->automouse_active && cfg->automouse_layer >= 0) {
         data->original_layer = zmk_layers_get_current();
@@ -285,6 +344,17 @@ static void paw32xx_motion_work_handler(struct k_work *work) {
     }
 
     LOG_DBG("x=%4d y=%4d", x, y);
+
+#ifdef CONFIG_PAW3222_SMART_ALGORITHM
+    // Apply smart algorithm processing
+    paw32xx_apply_smart_algorithm(data, &x, &y);
+    
+    // Skip processing if movement was filtered out
+    if (x == 0 && y == 0) {
+        gpio_pin_interrupt_configure_dt(&cfg->irq_gpio, GPIO_INT_EDGE_TO_ACTIVE);
+        return;
+    }
+#endif
 
 #ifdef CONFIG_ZMK_LAYERS
     // Auto mouse layer logic
@@ -437,7 +507,21 @@ static int paw32xx_init(const struct device *dev) {
     data->accumulated_movement = 0;
     data->automouse_active = false;
     data->original_layer = 0;
+#endif
+
+#ifdef CONFIG_PAW3222_SMART_ALGORITHM
+    // Initialize smart algorithm data
+    data->prev_x = 0;
+    data->prev_y = 0;
+    data->movement_count = 0;
+    data->velocity_x = 0;
+    data->velocity_y = 0;
+    data->last_movement_time = k_uptime_get_32();
     
+    LOG_DBG("Smart algorithm initialized");
+#endif
+
+#ifdef CONFIG_ZMK_LAYERS
     LOG_DBG("Auto mouse initialized: layer=%d, threshold=%d, timeout=%dms", 
            cfg->automouse_layer, cfg->movement_threshold, cfg->movement_timeout_ms);
 #endif
