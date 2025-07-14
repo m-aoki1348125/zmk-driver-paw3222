@@ -79,12 +79,10 @@ struct paw32xx_config {
     struct gpio_dt_spec power_gpio;
     int16_t res_cpi;
     bool force_awake;
-#ifdef CONFIG_ZMK_LAYERS
     int automouse_layer;
     int scroll_layers;
     int movement_timeout_ms;
     int movement_threshold;
-#endif
 };
 
 struct paw32xx_data {
@@ -92,19 +90,15 @@ struct paw32xx_data {
     struct k_work motion_work;
     struct gpio_callback motion_cb;
     struct k_timer motion_timer; // Add timer for delayed motion checking
-#ifdef CONFIG_ZMK_LAYERS
     struct k_timer automouse_timer; // Timer for auto mouse timeout
     int accumulated_movement;       // Track total movement for threshold
     bool automouse_active;          // Current auto mouse layer state
     int original_layer;             // Layer to return to after timeout
-#endif
-#if defined(CONFIG_PAW3222_SMART_ALGORITHM) && defined(CONFIG_ZMK_LAYERS)
     // Smart algorithm data
     int16_t prev_x, prev_y;         // Previous movement values for filtering
     uint32_t movement_count;        // Total movement counter
     int16_t velocity_x, velocity_y; // Current velocity for acceleration
     uint32_t last_movement_time;    // Timestamp of last movement
-#endif
 };
 
 static inline int32_t sign_extend(uint32_t value, uint8_t index) {
@@ -232,24 +226,25 @@ static void paw32xx_motion_timer_handler(struct k_timer *timer) {
     k_work_submit(&data->motion_work);
 }
 
-#ifdef CONFIG_ZMK_LAYERS
 static void paw32xx_automouse_timeout_handler(struct k_timer *timer) {
     struct paw32xx_data *data = CONTAINER_OF(timer, struct paw32xx_data, automouse_timer);
     
     if (data->automouse_active) {
+        #ifdef CONFIG_ZMK_LAYERS
         LOG_DBG("Auto mouse timeout, returning to layer %d", data->original_layer);
         zmk_layers_to(data->original_layer);
+        #endif
         data->automouse_active = false;
         data->accumulated_movement = 0;
     }
 }
 
-#if defined(CONFIG_PAW3222_SMART_ALGORITHM) && defined(CONFIG_ZMK_LAYERS)
 static void paw32xx_apply_smart_algorithm(struct paw32xx_data *data, int16_t *x, int16_t *y) {
     uint32_t current_time = k_uptime_get_32();
     uint32_t dt = current_time - data->last_movement_time;
     
     // Movement threshold - ignore very small movements (noise reduction)
+    #ifdef CONFIG_PAW3222_MOVEMENT_THRESHOLD
     if (CONFIG_PAW3222_MOVEMENT_THRESHOLD > 0) {
         int magnitude = abs(*x) + abs(*y);
         if (magnitude < CONFIG_PAW3222_MOVEMENT_THRESHOLD) {
@@ -258,6 +253,7 @@ static void paw32xx_apply_smart_algorithm(struct paw32xx_data *data, int16_t *x,
             return;
         }
     }
+    #endif
     
     // Velocity calculation for acceleration
     if (dt > 0 && dt < 100) { // Valid time delta (less than 100ms)
@@ -292,13 +288,13 @@ static void paw32xx_apply_smart_algorithm(struct paw32xx_data *data, int16_t *x,
            abs(data->velocity_x) + abs(data->velocity_y));
     #endif
 }
-#endif /* CONFIG_PAW3222_SMART_ALGORITHM */
 
-#ifdef CONFIG_ZMK_LAYERS
 static void paw32xx_activate_automouse_layer(struct paw32xx_data *data, const struct paw32xx_config *cfg) {
     if (!data->automouse_active && cfg->automouse_layer >= 0) {
+        #ifdef CONFIG_ZMK_LAYERS
         data->original_layer = zmk_layers_get_current();
         zmk_layers_to(cfg->automouse_layer);
+        #endif
         data->automouse_active = true;
         
         LOG_DBG("Activated auto mouse layer %d (was layer %d)", 
@@ -313,7 +309,6 @@ static void paw32xx_activate_automouse_layer(struct paw32xx_data *data, const st
         k_timer_start(&data->automouse_timer, K_MSEC(cfg->movement_timeout_ms), K_NO_WAIT);
     }
 }
-#endif
 
 static void paw32xx_motion_work_handler(struct k_work *work) {
     struct paw32xx_data *data = CONTAINER_OF(work, struct paw32xx_data, motion_work);
@@ -344,7 +339,7 @@ static void paw32xx_motion_work_handler(struct k_work *work) {
 
     LOG_DBG("x=%4d y=%4d", x, y);
 
-#if defined(CONFIG_PAW3222_SMART_ALGORITHM) && defined(CONFIG_ZMK_LAYERS)
+#ifdef CONFIG_PAW3222_SMART_ALGORITHM
     // Apply smart algorithm processing
     paw32xx_apply_smart_algorithm(data, &x, &y);
     
@@ -355,7 +350,6 @@ static void paw32xx_motion_work_handler(struct k_work *work) {
     }
 #endif
 
-#ifdef CONFIG_ZMK_LAYERS
     // Auto mouse layer logic
     if (cfg->automouse_layer >= 0 && cfg->movement_threshold > 0) {
         int movement_magnitude = abs(x) + abs(y);
@@ -372,7 +366,6 @@ static void paw32xx_motion_work_handler(struct k_work *work) {
                movement_magnitude, data->accumulated_movement, cfg->movement_threshold,
                data->automouse_active ? "true" : "false");
     }
-#endif
 
     input_report_rel(data->dev, INPUT_REL_X, x, false, K_FOREVER);
     input_report_rel(data->dev, INPUT_REL_Y, y, true, K_FOREVER);
@@ -500,15 +493,12 @@ static int paw32xx_init(const struct device *dev) {
     // Initialize the timer for delayed motion checks
     k_timer_init(&data->motion_timer, paw32xx_motion_timer_handler, NULL);
 
-#ifdef CONFIG_ZMK_LAYERS
     // Initialize auto mouse functionality
     k_timer_init(&data->automouse_timer, paw32xx_automouse_timeout_handler, NULL);
     data->accumulated_movement = 0;
     data->automouse_active = false;
     data->original_layer = 0;
-#endif
 
-#if defined(CONFIG_PAW3222_SMART_ALGORITHM) && defined(CONFIG_ZMK_LAYERS)
     // Initialize smart algorithm data
     data->prev_x = 0;
     data->prev_y = 0;
@@ -517,13 +507,8 @@ static int paw32xx_init(const struct device *dev) {
     data->velocity_y = 0;
     data->last_movement_time = k_uptime_get_32();
     
-    LOG_DBG("Smart algorithm initialized");
-#endif
-
-#ifdef CONFIG_ZMK_LAYERS
-    LOG_DBG("Auto mouse initialized: layer=%d, threshold=%d, timeout=%dms", 
+    LOG_DBG("PAW3222 initialized: layer=%d, threshold=%d, timeout=%dms", 
            cfg->automouse_layer, cfg->movement_threshold, cfg->movement_timeout_ms);
-#endif
 
 #if DT_INST_NODE_HAS_PROP(0, power_gpios)
     // Initialize power GPIO if defined
@@ -656,10 +641,10 @@ static int paw32xx_pm_action(const struct device *dev, enum pm_device_action act
         .power_gpio = GPIO_DT_SPEC_INST_GET_OR(n, power_gpios, {0}),                               \
         .res_cpi = DT_INST_PROP_OR(n, res_cpi, -1),                                                \
         .force_awake = DT_INST_PROP(n, force_awake),                                               \
-        IF_ENABLED(CONFIG_ZMK_LAYERS, (.automouse_layer = DT_INST_PROP_OR(n, automouse_layer, -1),)) \
-        IF_ENABLED(CONFIG_ZMK_LAYERS, (.scroll_layers = DT_INST_PROP_OR(n, scroll_layers, -1),))   \
-        IF_ENABLED(CONFIG_ZMK_LAYERS, (.movement_timeout_ms = DT_INST_PROP_OR(n, movement_timeout_ms, 600),)) \
-        IF_ENABLED(CONFIG_ZMK_LAYERS, (.movement_threshold = DT_INST_PROP_OR(n, movement_threshold, 100),)) \
+        .automouse_layer = DT_INST_PROP_OR(n, automouse_layer, -1),                                \
+        .scroll_layers = DT_INST_PROP_OR(n, scroll_layers, -1),                                    \
+        .movement_timeout_ms = DT_INST_PROP_OR(n, movement_timeout_ms, 600),                       \
+        .movement_threshold = DT_INST_PROP_OR(n, movement_threshold, 100),                         \
     };                                                                                             \
                                                                                                    \
     static struct paw32xx_data paw32xx_data_##n;                                                   \
