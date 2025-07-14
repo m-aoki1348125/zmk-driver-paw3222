@@ -98,7 +98,7 @@ struct paw32xx_data {
     bool automouse_active;          // Current auto mouse layer state
     int original_layer;             // Layer to return to after timeout
 #endif
-#ifdef CONFIG_PAW3222_SMART_ALGORITHM
+#if defined(CONFIG_PAW3222_SMART_ALGORITHM) && defined(CONFIG_ZMK_LAYERS)
     // Smart algorithm data
     int16_t prev_x, prev_y;         // Previous movement values for filtering
     uint32_t movement_count;        // Total movement counter
@@ -244,7 +244,7 @@ static void paw32xx_automouse_timeout_handler(struct k_timer *timer) {
     }
 }
 
-#ifdef CONFIG_PAW3222_SMART_ALGORITHM
+#if defined(CONFIG_PAW3222_SMART_ALGORITHM) && defined(CONFIG_ZMK_LAYERS)
 static void paw32xx_apply_smart_algorithm(struct paw32xx_data *data, int16_t *x, int16_t *y) {
     uint32_t current_time = k_uptime_get_32();
     uint32_t dt = current_time - data->last_movement_time;
@@ -265,8 +265,7 @@ static void paw32xx_apply_smart_algorithm(struct paw32xx_data *data, int16_t *x,
         data->velocity_y = (*y * 1000) / dt;
         
         // Apply acceleration curve based on velocity
-        int16_t vel_magnitude = sqrt(data->velocity_x * data->velocity_x + 
-                                   data->velocity_y * data->velocity_y);
+        int16_t vel_magnitude = abs(data->velocity_x) + abs(data->velocity_y);
         
         if (vel_magnitude > 500) { // High velocity threshold
             // Apply acceleration multiplier
@@ -290,12 +289,12 @@ static void paw32xx_apply_smart_algorithm(struct paw32xx_data *data, int16_t *x,
     #ifdef CONFIG_PAW3222_DEBUG
     LOG_DBG("Smart algorithm: raw(%d,%d) -> filtered(%d,%d), vel=%d", 
            data->prev_x, data->prev_y, *x, *y, 
-           sqrt(data->velocity_x * data->velocity_x + data->velocity_y * data->velocity_y));
+           abs(data->velocity_x) + abs(data->velocity_y));
     #endif
 }
 #endif /* CONFIG_PAW3222_SMART_ALGORITHM */
-#endif /* CONFIG_ZMK_LAYERS */
 
+#ifdef CONFIG_ZMK_LAYERS
 static void paw32xx_activate_automouse_layer(struct paw32xx_data *data, const struct paw32xx_config *cfg) {
     if (!data->automouse_active && cfg->automouse_layer >= 0) {
         data->original_layer = zmk_layers_get_current();
@@ -345,7 +344,7 @@ static void paw32xx_motion_work_handler(struct k_work *work) {
 
     LOG_DBG("x=%4d y=%4d", x, y);
 
-#ifdef CONFIG_PAW3222_SMART_ALGORITHM
+#if defined(CONFIG_PAW3222_SMART_ALGORITHM) && defined(CONFIG_ZMK_LAYERS)
     // Apply smart algorithm processing
     paw32xx_apply_smart_algorithm(data, &x, &y);
     
@@ -509,7 +508,7 @@ static int paw32xx_init(const struct device *dev) {
     data->original_layer = 0;
 #endif
 
-#ifdef CONFIG_PAW3222_SMART_ALGORITHM
+#if defined(CONFIG_PAW3222_SMART_ALGORITHM) && defined(CONFIG_ZMK_LAYERS)
     // Initialize smart algorithm data
     data->prev_x = 0;
     data->prev_y = 0;
